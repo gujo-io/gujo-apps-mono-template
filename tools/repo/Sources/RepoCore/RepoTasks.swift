@@ -3,6 +3,9 @@ import Foundation
 /// The repo commands that run child processes. Child processes run in the repository root and
 /// share this process's standard streams. Progress lines go through `log`; failures throw `RepoError`.
 public struct RepoTasks {
+    /// Files per `swift format lint --parallel` call; see `lint`.
+    static let lintBatchSize = 400
+
     public let repository: Repository
     let log: (String) -> Void
 
@@ -40,11 +43,24 @@ public struct RepoTasks {
         for failure in failures {
             log("구조 FAIL \(failure.name): \(failure.detail)")
         }
-        if !files.isEmpty {
-            try execute(
-                ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + files,
-                display: "swift format lint --strict --parallel --configuration .swift-format (파일 \(files.count)개)"
-            )
+        // swift-format --parallel keeps a descriptor open per file until the run ends, so one call over
+        // every file fails with EMFILE where the open-file limit is 1024 (Linux containers). Batches stay
+        // well below it; every batch runs even when an earlier one fails, so all findings are printed.
+        var formatError: RepoError?
+        for start in stride(from: 0, to: files.count, by: Self.lintBatchSize) {
+            let batch = Array(files[start..<min(start + Self.lintBatchSize, files.count)])
+            do {
+                try execute(
+                    ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + batch,
+                    display: "swift format lint --strict --parallel --configuration .swift-format "
+                        + "(파일 \(start + 1)–\(start + batch.count) / \(files.count)개)"
+                )
+            } catch let error as RepoError {
+                formatError = formatError ?? error
+            }
+        }
+        if let formatError {
+            throw formatError
         }
         guard failures.isEmpty else {
             throw RepoError.failure("lint 실패: 앱 구조 점검에서 FAIL \(failures.count)건")
