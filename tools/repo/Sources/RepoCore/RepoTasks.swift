@@ -3,9 +3,6 @@ import Foundation
 /// The repo commands that run child processes. Child processes run in the repository root and
 /// share this process's standard streams. Progress lines go through `log`; failures throw `RepoError`.
 public struct RepoTasks {
-    /// Files per `swift format lint --parallel` call; see `lint`.
-    static let lintBatchSize = 400
-
     public let repository: Repository
     let log: (String) -> Void
 
@@ -43,27 +40,44 @@ public struct RepoTasks {
         for failure in failures {
             log("구조 FAIL \(failure.name): \(failure.detail)")
         }
-        // swift-format --parallel keeps a descriptor open per file until the run ends, so one call over
-        // every file fails with EMFILE where the open-file limit is 1024 (Linux containers). Batches stay
-        // well below it; every batch runs even when an earlier one fails, so all findings are printed.
-        var formatError: RepoError?
-        for start in stride(from: 0, to: files.count, by: Self.lintBatchSize) {
-            let batch = Array(files[start..<min(start + Self.lintBatchSize, files.count)])
+        try formatLint(files)
+        guard failures.isEmpty else {
+            throw RepoError.failure("lint 실패: 앱 구조 점검에서 FAIL \(failures.count)건")
+        }
+    }
+
+    /// `swift format lint --parallel` keeps a descriptor open per file until the run ends, so one call
+    /// over every file fails with EMFILE under a 1024 open-file limit (the usual soft limit in Linux
+    /// containers). The soft limit is raised toward the hard limit first, which the child inherits, so
+    /// one call is enough wherever the hard limit allows; otherwise the files are split by the limit in
+    /// effect. A batch with findings (exit 1) does not stop the next one, so every finding is printed;
+    /// any other failure (crash, launch error) stops at once.
+    private func formatLint(_ files: [String]) throws {
+        guard !files.isEmpty else {
+            return
+        }
+        let reserved = 128
+        let limit = OpenFileLimit.raise(toAtLeast: files.count + reserved)
+        let batchSize = max(64, limit - reserved)
+        var failedRanges: [String] = []
+        for start in stride(from: 0, to: files.count, by: batchSize) {
+            let batch = Array(files[start..<min(start + batchSize, files.count)])
+            let range = batch.count == files.count ? "" : "\(start + 1)–\(start + batch.count) / "
             do {
                 try execute(
                     ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + batch,
                     display: "swift format lint --strict --parallel --configuration .swift-format "
-                        + "(파일 \(start + 1)–\(start + batch.count) / \(files.count)개)"
+                        + "(파일 \(range)\(files.count)개)"
                 )
-            } catch let error as RepoError {
-                formatError = formatError ?? error
+            } catch let error as RepoError where error.exitCode == 1 {
+                failedRanges.append("\(start + 1)–\(start + batch.count)")
             }
         }
-        if let formatError {
-            throw formatError
-        }
-        guard failures.isEmpty else {
-            throw RepoError.failure("lint 실패: 앱 구조 점검에서 FAIL \(failures.count)건")
+        guard failedRanges.isEmpty else {
+            throw RepoError(
+                "실패(exit 1): swift format lint (파일 \(failedRanges.joined(separator: ", ")) / \(files.count)개)",
+                exitCode: 1
+            )
         }
     }
 
