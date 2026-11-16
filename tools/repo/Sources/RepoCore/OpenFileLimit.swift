@@ -21,7 +21,15 @@ enum OpenFileLimit {
         }
         var raised = limit
         raised.rlim_cur = target
-        return setrlimit(resource, &raised) == 0 ? Int(clamping: target) : current
+        guard setrlimit(resource, &raised) == 0 else {
+            return current
+        }
+        // The kernel may grant less than asked (XNU caps at kern.maxfilesperproc), so read it back.
+        var effective = rlimit()
+        guard getrlimit(resource, &effective) == 0 else {
+            return current
+        }
+        return Int(clamping: effective.rlim_cur)
     }
 
     #if canImport(Glibc)

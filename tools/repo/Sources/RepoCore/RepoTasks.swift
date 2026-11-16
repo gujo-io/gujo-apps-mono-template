@@ -63,14 +63,21 @@ public struct RepoTasks {
         for start in stride(from: 0, to: files.count, by: batchSize) {
             let batch = Array(files[start..<min(start + batchSize, files.count)])
             let range = batch.count == files.count ? "" : "\(start + 1)–\(start + batch.count) / "
-            do {
-                try execute(
-                    ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + batch,
-                    display: "swift format lint --strict --parallel --configuration .swift-format "
-                        + "(파일 \(range)\(files.count)개)"
-                )
-            } catch let error as RepoError where error.exitCode == 1 {
+            let display =
+                "swift format lint --strict --parallel --configuration .swift-format (파일 \(range)\(files.count)개)"
+            log("==> \(display)")
+            // A launch failure throws here and stops the lint.
+            let status = try ProcessRunner.run(
+                ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + batch,
+                in: repository.root
+            )
+            if status == 1 {
+                log("실패(exit 1): \(display)")
                 failedRanges.append("\(start + 1)–\(start + batch.count)")
+                continue
+            }
+            guard status == ExitCode.success else {
+                throw RepoError("실패(exit \(status)): \(display)", exitCode: status)
             }
         }
         guard failedRanges.isEmpty else {
