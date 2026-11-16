@@ -42,8 +42,8 @@ public struct RepoTasks {
         }
         if !files.isEmpty {
             try execute(
-                ["swift", "format", "lint", "--strict", "--configuration", ".swift-format"] + files,
-                display: "swift format lint --strict --configuration .swift-format (파일 \(files.count)개)"
+                ["swift", "format", "lint", "--strict", "--parallel", "--configuration", ".swift-format"] + files,
+                display: "swift format lint --strict --parallel --configuration .swift-format (파일 \(files.count)개)"
             )
         }
         guard failures.isEmpty else {
